@@ -18,10 +18,10 @@ A fully autonomous, time-aware 0DTE and 1DTE options tracker for QQQ. It streams
     *   **Live Session:** Real-time gauges, charts (GEX, OI, IV Skew, Volume Flow), and signal evolution sparklines.
 *   **Telegram Alerts (`alerts.py`):** Real-time notifications for Regime Changes, Wall Breaks, Confluence Shifts, IV Spikes, and UOA.
 
-## 🛠 Directory Structure
+## Directory Structure
 
 ```text
-📂 options/
+options/
 ├── fetch_qqq_live.py       # Main data scraper and daemon runner
 ├── signals.py              # Advanced options math and signal generation
 ├── dashboard.py            # Streamlit UI
@@ -67,7 +67,7 @@ streamlit run dashboard.py
 
 ## VPS Deployment (Ubuntu)
 
-This project is built to run 24/7 on a VPS (like DigitalOcean, Hetzner, or Vultr). Once deployed, the fetcher runs in the background and automatically manages itself based on New York market hours.
+This project is built to run 24/7 on a VPS. Once deployed, the fetcher runs in the background and automatically manages itself based on New York market hours.
 
 1. Create a VPS on the US East Coast (for lowest latency to Tastytrade).
 2. SSH into your VPS and copy this folder over.
