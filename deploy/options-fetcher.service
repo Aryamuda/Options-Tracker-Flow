@@ -1,0 +1,18 @@
+[Unit]
+Description=QQQ Options Live Fetcher Daemon
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/qqq-options
+# Using the virtual environment python
+ExecStart=/opt/qqq-options/venv/bin/python fetch_qqq_live.py --daemon
+Restart=always
+RestartSec=10
+# Timezone and unbuffered output (so logs show up immediately)
+Environment="TZ=America/New_York"
+Environment="PYTHONUNBUFFERED=1"
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,17 @@
+[Unit]
+Description=QQQ Options Streamlit Dashboard
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/qqq-options
+# Start streamlit on port 80 so it's directly accessible via IP address
+ExecStart=/opt/qqq-options/venv/bin/streamlit run dashboard.py --server.port 80 --server.address 0.0.0.0
+Restart=always
+RestartSec=10
+# Timezone
+Environment="TZ=America/New_York"
+
+[Install]
+WantedBy=multi-user.target

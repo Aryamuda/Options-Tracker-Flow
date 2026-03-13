@@ -1,0 +1,7 @@
+tastytrade
+pandas
+numpy
+streamlit
+plotly
+pyarrow
+python-dotenv
