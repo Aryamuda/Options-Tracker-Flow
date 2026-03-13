@@ -1,5 +1,7 @@
 # Options-Flow-Tracker
 
+> Built for personal use. Live on VPS, streaming QQQ 0DTE/1DTE data via Tastytrade API.
+
 A fully autonomous, time-aware 0DTE and 1DTE options tracker for QQQ. It streams live options data from Tastytrade, calculates 10+ advanced greek and flow signals, presents them on a mobile-friendly Streamlit dashboard, and fires Telegram alerts when actionable setups occur.
 
 ## Features
