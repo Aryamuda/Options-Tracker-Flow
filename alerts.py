@@ -258,13 +258,20 @@ class AlertManager:
     fires alerts when thresholds are crossed, respects cooldowns.
     """
 
-    def __init__(self):
-        from pathlib import Path
-        env_path = Path(__file__).parent / '.env'
-        load_dotenv(env_path)
+    def __init__(self, token: str = None, chat_id: str = None):
+        """
+        Initialize AlertManager with explicit credentials.
         
-        token = os.environ.get('TELEGRAM_TOKEN', '')
-        chat_id = os.environ.get('TELEGRAM_CHAT_ID', '')
+        Args:
+            token: Telegram bot token (or None to read from TELEGRAM_TOKEN env var)
+            chat_id: Telegram chat ID (or None to read from TELEGRAM_CHAT_ID env var)
+        """
+        # Allow passing credentials directly or falling back to env vars
+        # This makes it testable and avoids side effects in constructor
+        if token is None:
+            token = os.environ.get('TELEGRAM_TOKEN', '')
+        if chat_id is None:
+            chat_id = os.environ.get('TELEGRAM_CHAT_ID', '')
 
         if token and chat_id:
             self.sender = TelegramSender(token, chat_id)
@@ -276,6 +283,15 @@ class AlertManager:
             print("   📱 Telegram alerts: DISABLED (missing TELEGRAM_TOKEN / TELEGRAM_CHAT_ID)")
 
         self.cooldown = AlertCooldown()
+
+    @classmethod
+    def from_env(cls, env_path: str = None):
+        """Factory method to create AlertManager from .env file."""
+        from pathlib import Path
+        if env_path is None:
+            env_path = Path(__file__).parent / '.env'
+        load_dotenv(env_path)
+        return cls()
 
     def _send(self, alert_type: str, text: str, silent: bool = False) -> bool:
         """Send alert if enabled and cooldown allows."""

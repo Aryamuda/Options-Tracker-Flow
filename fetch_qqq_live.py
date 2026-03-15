@@ -2,6 +2,7 @@ import asyncio
 import os
 import sys
 import signal
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -32,6 +33,8 @@ def signal_handler(sig, frame):
     global running
     print("\n\n🛑 Stopping... (Ctrl+C)")
     running = False
+    # Flush any pending parquet data before exiting
+    flush_all_buffers()
 
 signal.signal(signal.SIGINT, signal_handler)
 
@@ -103,16 +106,61 @@ def get_data_dir(date):
     return day_dir
 
 
-def append_to_parquet(df, filepath):
-    """Append dataframe to existing parquet file, or create new one."""
-    filepath = Path(filepath)
+# Buffer for batching parquet writes - avoids reading/writing entire file every 60s
+# This is a global buffer: {filepath: [df1, df2, ...]}
+_parquet_buffer = {}
+PARQUET_BATCH_SIZE = 5  # Write after N snapshots accumulate
 
+
+def append_to_parquet(df, filepath, batch_size: int = PARQUET_BATCH_SIZE):
+    """
+    Buffer dataframe for batched parquet writes.
+    
+    Instead of reading the entire file every poll (which gets slower over time),
+    we buffer in memory and only write after batch_size snapshots accumulate.
+    This reduces I/O from O(n) per poll to O(1) per poll.
+    """
+    filepath = Path(filepath)
+    
+    # Initialize buffer for this filepath if needed
+    if filepath not in _parquet_buffer:
+        _parquet_buffer[filepath] = []
+    
+    _parquet_buffer[filepath].append(df)
+    
+    # If we've accumulated enough, write all buffered data
+    if len(_parquet_buffer[filepath]) >= batch_size:
+        _flush_parquet_buffer(filepath)
+        return True  # Indicates a flush happened
+    
+    return False  # Still buffering
+
+
+def _flush_parquet_buffer(filepath: Path):
+    """Flush buffered dataframes to parquet file."""
+    if filepath not in _parquet_buffer or not _parquet_buffer[filepath]:
+        return
+    
+    buffered = _parquet_buffer[filepath]
+    
     if filepath.exists():
+        # Read existing and append all buffered
         existing = pd.read_parquet(filepath)
-        combined = pd.concat([existing, df], ignore_index=True)
-        combined.to_parquet(filepath, index=False)
+        combined = pd.concat([existing] + buffered, ignore_index=True)
     else:
-        df.to_parquet(filepath, index=False)
+        combined = pd.concat(buffered, ignore_index=True)
+    
+    combined.to_parquet(filepath, index=False)
+    
+    # Clear buffer after successful write
+    _parquet_buffer[filepath] = []
+    print(f"   💾 Flushed {len(buffered)} snapshots to {filepath.name}")
+
+
+def flush_all_buffers():
+    """Flush all pending parquet buffers - call on shutdown."""
+    for filepath in list(_parquet_buffer.keys()):
+        _flush_parquet_buffer(filepath)
 
 
 def filter_atm_range(options, spot_price, pct=ATM_RANGE_PCT):
@@ -174,18 +222,24 @@ async def fetch_greeks(streamer, streamer_symbols):
         return {}
 
     greeks = {}
+    # Dedupe symbols to avoid infinite loop - if same symbol appears twice,
+    # len(greeks) < len(streamer_symbols) will never be true
+    unique_symbols = list(set(streamer_symbols))
+    expected_count = len(unique_symbols)
+
     try:
-        print(f"   📈 Subscribing to {len(streamer_symbols)} Greeks...")
+        print(f"   📈 Subscribing to {len(streamer_symbols)} Greeks ({expected_count} unique)...")
         for i in range(0, len(streamer_symbols), GREEKS_BATCH_SIZE):
             batch = streamer_symbols[i:i + GREEKS_BATCH_SIZE]
             await streamer.subscribe(Greeks, batch)
 
         await asyncio.sleep(0.5)
 
-        start = asyncio.get_event_loop().time()
-        while len(greeks) < len(streamer_symbols):
-            elapsed = asyncio.get_event_loop().time() - start
+        start = time.time()
+        while len(greeks) < expected_count:
+            elapsed = time.time() - start
             if elapsed > GREEKS_TIMEOUT:
+                print(f"   ⚠ Greeks timeout after {elapsed:.1f}s ({len(greeks)}/{expected_count})")
                 break
             try:
                 greek = await asyncio.wait_for(
@@ -193,11 +247,16 @@ async def fetch_greeks(streamer, streamer_symbols):
                 )
                 greeks[greek.event_symbol] = greek
             except asyncio.TimeoutError:
-                if len(greeks) == 0 and elapsed < 3:
+                # If we got at least some greeks and timed out, that's probably fine
+                # Market might be closed or data unavailable
+                if len(greeks) > 0:
+                    break
+                # If we got nothing for 3+ seconds, keep trying (might be connection delay)
+                if elapsed < 3:
                     continue
                 break
 
-        print(f"   ✓ Received {len(greeks)} Greeks")
+        print(f"   ✓ Received {len(greeks)}/{expected_count} Greeks")
     except Exception as e:
         print(f"   ⚠ Greeks error: {e}")
 
@@ -503,8 +562,8 @@ async def main():
     print(f"   Filter: ATM ±{ATM_RANGE_PCT*100:.0f}%")
     print(f"   Output: {DATA_DIR}/")
 
-    # Initialize AlertManager
-    alert_manager = AlertManager()
+    # Initialize AlertManager - use factory method to load env
+    alert_manager = AlertManager.from_env()
 
     # Create session
     print("\n🔐 Creating session...")

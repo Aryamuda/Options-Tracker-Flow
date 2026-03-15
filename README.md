@@ -28,7 +28,6 @@ options/
 ├── signals.py              # Advanced options math and signal generation
 ├── dashboard.py            # Streamlit UI
 ├── alerts.py               # Telegram bot integration
-├── utils.py                # Helper functions for Parquet storage
 ├── data/
 │   └── YYYY-MM-DD/         # Daily Parquet files (0dte.parquet, 1dte.parquet)
 ├── deploy/                 # VPS installation scripts and systemd services

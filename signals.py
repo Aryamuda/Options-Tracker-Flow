@@ -4,9 +4,41 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 
-# Data Structures 
+# ─── Constants ─────────────────────────────────────────────────────────────────
+# Named constants instead of magic numbers - because I'm not a wizard
 
-@dataclass
+# GEX calculation: OI × Gamma × 100 × Spot² × 0.01
+GEX_MULTIPLIER = 0.01
+
+# Confluence scoring thresholds
+CONFLUENCE_STRONG_BIAS = 4  # Score >= 4 means strong LONG/SHORT
+CONFLUENCE_MAX_SCORE = 16   # Maximum possible confluence score
+CONFLUENCE_TOTAL_SIGNALS = 10  # Number of signals in confluence calculation
+CONFIDENCE_HIGH_THRESHOLD = 7  # Active signals for high confidence
+CONFIDENCE_MEDIUM_THRESHOLD = 4  # Active signals for medium confidence
+
+# Vanna normalization divisor
+VANNA_NORMALIZE = 10000
+
+# UOA threshold - volume must be 2x OI to be "unusual"
+UOA_VOI_THRESHOLD = 2.0
+UOA_MAX_FLAGS = 10
+
+# IV Skew thresholds
+IV_SKEW_BEARISH = 3.0   # > 3% skew = fear
+IV_SKEW_BULLISH = -1.0  # < -1% skew = extreme greed (still bearish signal)
+
+# P/C Volume ratio thresholds (contrarian)
+PC_VOL_LONG_THRESHOLD = 1.2  # Heavy puts → contrarian long
+PC_VOL_SHORT_THRESHOLD = 0.6  # Heavy calls → contrarian short
+
+# OI Wall proximity threshold (0.2 = within 20% of wall range)
+WALL_PROXIMITY_THRESHOLD = 0.2
+
+
+# Data Structures with __slots__ for memory efficiency
+
+@dataclass(slots=True)
 class GEXData:
     """Gamma Exposure data."""
     gex_by_strike: dict  # {strike: gex_value}
@@ -17,7 +49,7 @@ class GEXData:
     regime: str = "unknown"  # "positive_gamma" or "negative_gamma"
 
 
-@dataclass
+@dataclass(slots=True)
 class OIWalls:
     """Open Interest wall data."""
     call_wall: Optional[float] = None
@@ -27,7 +59,7 @@ class OIWalls:
     total_wall: Optional[float] = None  # highest combined OI
 
 
-@dataclass
+@dataclass(slots=True)
 class IVMetrics:
     """Implied Volatility metrics."""
     atm_iv: Optional[float] = None
@@ -37,7 +69,7 @@ class IVMetrics:
     iv_by_strike: dict = field(default_factory=dict)
 
 
-@dataclass
+@dataclass(slots=True)
 class PCRatios:
     """Put/Call ratios."""
     volume_pc: Optional[float] = None
@@ -48,7 +80,7 @@ class PCRatios:
     total_put_oi: int = 0
 
 
-@dataclass
+@dataclass(slots=True)
 class UOAFlag:
     """Unusual Options Activity flag."""
     strike: float
@@ -58,7 +90,7 @@ class UOAFlag:
     voi_ratio: float
 
 
-@dataclass
+@dataclass(slots=True)
 class FlowDirection:
     """Charm/Vanna direction."""
     charm_bias: str = "neutral"  # "buy", "sell", "neutral"
@@ -67,7 +99,7 @@ class FlowDirection:
     vanna_strength: float = 0.0
 
 
-@dataclass
+@dataclass(slots=True)
 class TradeSuggestion:
     """Auto-generated trade suggestion."""
     bias: str  # "LONG", "SHORT", "NEUTRAL"
@@ -77,7 +109,7 @@ class TradeSuggestion:
     reason: str = ""
 
 
-@dataclass
+@dataclass(slots=True)
 class ConfluenceScore:
     """Confluence scoring result."""
     long_score: int = 0
@@ -92,7 +124,7 @@ class ConfluenceScore:
     summary: str = ""
 
 
-@dataclass
+@dataclass(slots=True)
 class SignalSnapshot:
     """All signals for a single timestamp."""
     timestamp: str = ""
@@ -112,6 +144,11 @@ class SignalSnapshot:
 
 
 # Signal Computation 
+# GEX multiplier: OI × Gamma × 100 × Spot² × 0.01
+# The 0.01 converts from per-share to percentage terms
+GEX_MULTIPLIER = 0.01
+
+
 def compute_gex(df: pd.DataFrame, spot: float) -> GEXData:
     """
     Compute Gamma Exposure per strike.
@@ -119,24 +156,27 @@ def compute_gex(df: pd.DataFrame, spot: float) -> GEXData:
     GEX = OI × Gamma × 100 × Spot² × 0.01
     Convention: Call GEX positive, Put GEX negative (dealer perspective)
     """
-    gex_by_strike = {}
+    if df.empty:
+        return GEXData(gex_by_strike={})
 
-    for strike, group in df.groupby('strike'):
-        strike_gex = 0.0
-        for _, row in group.iterrows():
-            oi = row.get('open_interest', 0) or 0
-            gamma = row.get('gamma', 0) or 0
-            if oi == 0 or gamma == 0:
-                continue
+    # Pre-compute common terms once instead of in every row
+    spot_squared = spot ** 2
+    multiplier = 100 * spot_squared * GEX_MULTIPLIER
 
-            contract_gex = float(oi) * float(gamma) * 100 * spot**2 * 0.01
+    # Vectorized approach - no iterrows() garbage, this aint 2015
+    df_calc = df[['strike', 'type', 'open_interest', 'gamma']].copy()
+    df_calc['open_interest'] = pd.to_numeric(df_calc['open_interest'], errors='coerce').fillna(0)
+    df_calc['gamma'] = pd.to_numeric(df_calc['gamma'], errors='coerce').fillna(0)
 
-            if row['type'] == 'CALL':
-                strike_gex += contract_gex  # Dealers short calls → positive GEX
-            else:
-                strike_gex -= contract_gex  # Dealers short puts → negative GEX
+    # Call GEX positive, Put GEX negative (dealer perspective)
+    df_calc['contract_gex'] = np.where(
+        df_calc['type'] == 'CALL',
+        df_calc['open_interest'] * df_calc['gamma'] * multiplier,
+        -df_calc['open_interest'] * df_calc['gamma'] * multiplier
+    )
 
-        gex_by_strike[float(strike)] = strike_gex
+    # Group by strike - single pass, O(n) instead of O(n²)
+    gex_by_strike = df_calc.groupby('strike')['contract_gex'].sum().to_dict()
 
     if not gex_by_strike:
         return GEXData(gex_by_strike={})
@@ -240,6 +280,11 @@ def compute_max_pain(df: pd.DataFrame) -> Optional[float]:
     if calls.empty and puts.empty:
         return None
 
+    # Pre-aggregate OI by strike - avoid iterating over every row for every K
+    # This turns O(strikes × options) into O(strikes × unique_strikes)
+    call_oi_by_strike = calls.groupby('strike')['open_interest'].sum()
+    put_oi_by_strike = puts.groupby('strike')['open_interest'].sum()
+
     strikes = sorted(df['strike'].unique())
     min_pain = float('inf')
     max_pain_strike = None
@@ -247,19 +292,18 @@ def compute_max_pain(df: pd.DataFrame) -> Optional[float]:
     for K in strikes:
         total_pain = 0
 
-        # Call pain: call holders lose money when price is below their strike
-        # But calls are ITM when K > strike, so call OI at strike s:
-        # pain = call_OI(s) * max(0, K - s) * 100
-        for _, row in calls.iterrows():
-            s = row['strike']
-            oi = row['open_interest'] or 0
-            total_pain += oi * max(0, K - s) * 100
+        # Vectorized call pain: sum of OI(s) * max(0, K - s) for all s
+        # Only iterate over strikes that could contribute (s < K)
+        contributing_calls = call_oi_by_strike[call_oi_by_strike.index < K]
+        if not contributing_calls.empty:
+            pain_per_strike = (K - contributing_calls.index) * contributing_calls.values * 100
+            total_pain += pain_per_strike.sum()
 
-        # Put pain: put_OI(s) * max(0, s - K) * 100
-        for _, row in puts.iterrows():
-            s = row['strike']
-            oi = row['open_interest'] or 0
-            total_pain += oi * max(0, s - K) * 100
+        # Vectorized put pain: sum of OI(s) * max(0, s - K) for all s
+        contributing_puts = put_oi_by_strike[put_oi_by_strike.index > K]
+        if not contributing_puts.empty:
+            pain_per_strike = (contributing_puts.index - K) * contributing_puts.values * 100
+            total_pain += pain_per_strike.sum()
 
         if total_pain < min_pain:
             min_pain = total_pain
@@ -343,17 +387,21 @@ def compute_delta_weighted_oi(df: pd.DataFrame) -> float:
     Net delta-weighted OI.
     Positive = market is net long delta (bullish positioning).
     """
-    result = 0.0
-    for _, row in df.iterrows():
-        oi = row.get('open_interest', 0) or 0
-        delta = row.get('delta', 0) or 0
-        if oi == 0 or delta == 0:
-            continue
-        if row['type'] == 'CALL':
-            result += oi * delta
-        else:
-            result -= oi * abs(delta)
-    return round(result, 2)
+    if df.empty:
+        return 0.0
+
+    df_calc = df[['type', 'open_interest', 'delta']].copy()
+    df_calc['open_interest'] = pd.to_numeric(df_calc['open_interest'], errors='coerce').fillna(0)
+    df_calc['delta'] = pd.to_numeric(df_calc['delta'], errors='coerce').fillna(0)
+
+    # Vectorized: calls add, puts subtract (puts are bearish delta)
+    df_calc['dwoi'] = np.where(
+        df_calc['type'] == 'CALL',
+        df_calc['open_interest'] * df_calc['delta'],
+        -df_calc['open_interest'] * np.abs(df_calc['delta'])
+    )
+
+    return round(df_calc['dwoi'].sum(), 2)
 
 
 def compute_net_delta(df: pd.DataFrame) -> float:
@@ -361,41 +409,55 @@ def compute_net_delta(df: pd.DataFrame) -> float:
     Net delta exposure in share equivalents.
     = Σ(Call_OI × Δ × 100) - Σ(Put_OI × |Δ| × 100)
     """
-    result = 0.0
-    for _, row in df.iterrows():
-        oi = row.get('open_interest', 0) or 0
-        delta = row.get('delta', 0) or 0
-        if oi == 0 or delta == 0:
-            continue
-        if row['type'] == 'CALL':
-            result += oi * delta * 100
-        else:
-            result -= oi * abs(delta) * 100
-    return round(result, 2)
+    if df.empty:
+        return 0.0
+
+    df_calc = df[['type', 'open_interest', 'delta']].copy()
+    df_calc['open_interest'] = pd.to_numeric(df_calc['open_interest'], errors='coerce').fillna(0)
+    df_calc['delta'] = pd.to_numeric(df_calc['delta'], errors='coerce').fillna(0)
+
+    # Vectorized with 100x multiplier for share equivalents
+    df_calc['net_delta'] = np.where(
+        df_calc['type'] == 'CALL',
+        df_calc['open_interest'] * df_calc['delta'] * 100,
+        -df_calc['open_interest'] * np.abs(df_calc['delta']) * 100
+    )
+
+    return round(df_calc['net_delta'].sum(), 2)
 
 
 def compute_uoa(df: pd.DataFrame, voi_threshold: float = 2.0) -> list:
     """
     Flag unusual options activity where Volume/OI > threshold.
     """
-    flags = []
-    for _, row in df.iterrows():
-        vol = row.get('volume', 0) or 0
-        oi = row.get('open_interest', 0) or 0
-        if oi > 0 and vol > 0:
-            voi = vol / oi
-            if voi > voi_threshold:
-                flags.append(UOAFlag(
-                    strike=row['strike'],
-                    opt_type=row['type'],
-                    volume=int(vol),
-                    oi=int(oi),
-                    voi_ratio=round(voi, 2),
-                ))
+    if df.empty:
+        return []
 
-    # Sort by voi_ratio descending
-    flags.sort(key=lambda x: x.voi_ratio, reverse=True)
-    return flags[:10]  # Top 10
+    df_calc = df[['strike', 'type', 'volume', 'open_interest']].copy()
+    df_calc['volume'] = pd.to_numeric(df_calc['volume'], errors='coerce').fillna(0)
+    df_calc['open_interest'] = pd.to_numeric(df_calc['open_interest'], errors='coerce').fillna(0)
+
+    # Filter out zero OI and compute V/OI ratio
+    df_calc = df_calc[df_calc['open_interest'] > 0]
+    df_calc['voi'] = df_calc['volume'] / df_calc['open_interest']
+
+    # Filter by threshold
+    flagged = df_calc[df_calc['voi'] > voi_threshold].copy()
+    flagged = flagged.sort_values('voi', ascending=False).head(10)
+
+    # Build UOAFlag objects
+    flags = [
+        UOAFlag(
+            strike=row['strike'],
+            opt_type=row['type'],
+            volume=int(row['volume']),
+            oi=int(row['open_interest']),
+            voi_ratio=round(row['voi'], 2),
+        )
+        for _, row in flagged.iterrows()
+    ]
+
+    return flags
 
 
 def compute_flow_direction(df: pd.DataFrame, spot: float) -> FlowDirection:
@@ -422,21 +484,26 @@ def compute_flow_direction(df: pd.DataFrame, spot: float) -> FlowDirection:
 
     charm_strength = abs(charm_diff) / max(itm_call_oi + itm_put_oi, 1)
 
-    # Vanna: based on net vanna exposure
-    # Simplified: if more OTM puts have high vanna, IV drop = buying pressure
-    vanna_sum = 0.0
-    for _, row in df.iterrows():
-        oi = row.get('open_interest', 0) or 0
-        vega = row.get('vega', 0) or 0  # Using vega as proxy when vanna unavailable
-        if oi == 0 or vega == 0:
-            continue
-        if row['type'] == 'CALL':
-            vanna_sum += oi * vega
-        else:
-            vanna_sum -= oi * vega
+    # Vanna: based on net vega-weighted OI exposure
+    # NOTE: Actual vanna = ∂V/∂σ × ∂S/∂K (second order greek - requires portfolio greeks)
+    # We're using vega as a proxy here because we don't have vanna directly from the API
+    # This is a rough approximation: positive vega OI in calls = dealers long vega = IV up = pain
+    # When IV drops, dealers make money on long vega, which creates buying pressure (the vanna feedback loop)
+    # It's not mathematically correct but it's better than nothing for a quick signal
+    df_vega = df[['strike', 'type', 'open_interest', 'vega']].copy()
+    df_vega['open_interest'] = pd.to_numeric(df_vega['open_interest'], errors='coerce').fillna(0)
+    df_vega['vega'] = pd.to_numeric(df_vega['vega'], errors='coerce').fillna(0)
+
+    # Vectorized: calls add to vanna_sum, puts subtract (dealers short puts = negative exposure)
+    df_vega['vega_oi'] = np.where(
+        df_vega['type'] == 'CALL',
+        df_vega['open_interest'] * df_vega['vega'],
+        -df_vega['open_interest'] * df_vega['vega']
+    )
+    vanna_sum = df_vega['vega_oi'].sum()
 
     vanna_bias = "buy" if vanna_sum > 0 else ("sell" if vanna_sum < 0 else "neutral")
-    vanna_strength = min(abs(vanna_sum) / 10000, 1.0)  # Normalized
+    vanna_strength = min(abs(vanna_sum) / 10000, 1.0)  # Normalized to [0, 1]
 
     return FlowDirection(
         charm_bias=charm_bias,

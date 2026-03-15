@@ -568,25 +568,26 @@ def render_signal_card(label: str, value: str, css_class: str = ""):
 
 def render_key_levels(signals: SignalSnapshot):
     """Render the key levels list."""
+    # Store as (css_class, label, value, extra, numeric_value) - no more string parsing garbage
     levels = []
 
     if signals.oi_walls and signals.oi_walls.call_wall:
         levels.append(("level-call", f"🔴 Call Wall", f"${signals.oi_walls.call_wall:.0f}",
-                        f"{signals.oi_walls.call_wall_oi:,} OI"))
+                        f"{signals.oi_walls.call_wall_oi:,} OI", signals.oi_walls.call_wall))
     if signals.gex and signals.gex.flip_point:
-        levels.append(("level-gex", "🟡 GEX Flip", f"${signals.gex.flip_point:.1f}", ""))
+        levels.append(("level-gex", "🟡 GEX Flip", f"${signals.gex.flip_point:.1f}", "", signals.gex.flip_point))
     if signals.spot:
-        levels.append(("level-spot", "◆ Spot", f"${signals.spot:.2f}", ""))
+        levels.append(("level-spot", "◆ Spot", f"${signals.spot:.2f}", "", signals.spot))
     if signals.max_pain:
-        levels.append(("level-mp", "★ Max Pain", f"${signals.max_pain:.0f}", ""))
+        levels.append(("level-mp", "★ Max Pain", f"${signals.max_pain:.0f}", "", signals.max_pain))
     if signals.oi_walls and signals.oi_walls.put_wall:
         levels.append(("level-put", "🟢 Put Wall", f"${signals.oi_walls.put_wall:.0f}",
-                        f"{signals.oi_walls.put_wall_oi:,} OI"))
+                        f"{signals.oi_walls.put_wall_oi:,} OI", signals.oi_walls.put_wall))
 
-    # Sort by value descending
-    levels.sort(key=lambda x: float(x[2].replace('$', '').replace(',', '')), reverse=True)
+    # Sort by numeric value descending - no string parsing needed
+    levels.sort(key=lambda x: x[4] if x[4] is not None else 0, reverse=True)
 
-    for css, label, value, extra in levels:
+    for css, label, value, extra, _ in levels:
         extra_html = f" <span style='font-size:12px;opacity:0.7'>({extra})</span>" if extra else ""
         st.markdown(f"""
         <div class="level-item {css}">
